@@ -310,6 +310,9 @@ static int bucket_straw2_choose(struct crush_bucket_straw2 *bucket,
 	__s64 ln, draw, high_draw = 0;
 
 	for (i = 0; i < bucket->h.size; i++) {
+		if (!bucket->item_weights[i])
+			continue;
+
 		u = crush_hash32_3(bucket->h.hash, x, bucket->h.items[i], r);
 		u &= 0xffff;
 
