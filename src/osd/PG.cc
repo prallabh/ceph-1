@@ -792,6 +792,8 @@ bool PG::all_unfound_are_queried_or_lost(const OSDMapRef osdmap) const
     if (iter != peer_info.end() &&
         (iter->second.is_empty() || iter->second.dne()))
       continue;
+    if (!osdmap->exists(peer->osd))
+      continue;
     const osd_info_t &osd_info(osdmap->get_info(peer->osd));
     if (osd_info.lost_at <= osd_info.up_from) {
       // If there is even one OSD in might_have_unfound that isn't lost, we
@@ -3747,6 +3749,10 @@ void PG::replica_scrub(
 void PG::scrub(ThreadPool::TPHandle &handle)
 {
   lock();
+  if (deleting) {
+    unlock();
+    return;
+  }
   if (g_conf->osd_scrub_sleep > 0 &&
       (scrubber.state == PG::Scrubber::NEW_CHUNK ||
        scrubber.state == PG::Scrubber::INACTIVE)) {
@@ -3757,10 +3763,6 @@ void PG::scrub(ThreadPool::TPHandle &handle)
     t.sleep();
     lock();
     dout(20) << __func__ << " slept for " << t << dendl;
-  }
-  if (deleting) {
-    unlock();
-    return;
   }
 
   if (!is_primary() || !is_active() || !is_clean() || !is_scrubbing()) {
@@ -4224,8 +4226,9 @@ void PG::scrub_process_inconsistent()
   bool repair = state_test(PG_STATE_REPAIR);
   bool deep_scrub = state_test(PG_STATE_DEEP_SCRUB);
   const char *mode = (repair ? "repair": (deep_scrub ? "deep-scrub" : "scrub"));
-
-  if (!scrubber.authoritative.empty() || !scrubber.inconsistent.empty()) {
+  
+  // authoriative only store objects which missing or inconsistent.
+  if (!scrubber.authoritative.empty()) {
     stringstream ss;
     ss << info.pgid << " " << mode << " "
        << scrubber.missing.size() << " missing, "

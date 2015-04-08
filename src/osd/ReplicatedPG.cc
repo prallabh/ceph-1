@@ -1871,10 +1871,17 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op,
 	map<time_t,HitSetRef>::iterator itor;
 	bool in_other_hit_sets = false;
 	for (itor = agent_state->hit_set_map.begin(); itor != agent_state->hit_set_map.end(); ++itor) {
-	  if (itor->second->contains(missing_oid)) {
-	    in_other_hit_sets = true;
-	    break;
-	  }
+          if (obc.get()) {
+            if (obc->obs.oi.soid != hobject_t() && itor->second->contains(obc->obs.oi.soid)) {
+              in_other_hit_sets = true;
+              break;
+            }
+          } else {
+            if (missing_oid != hobject_t() && itor->second->contains(missing_oid)) {
+              in_other_hit_sets = true;
+              break;
+            }
+          }
 	}
 	if (in_other_hit_sets) {
 	  promote_object(obc, missing_oid, oloc, promote_op);
@@ -2068,9 +2075,12 @@ void ReplicatedPG::finish_proxy_read(hobject_t oid, ceph_tid_t tid, int r)
     return;
   }
   assert(q->second.size());
-  OpRequestRef op = q->second.front();
-  assert(op == prdop->op);
-  q->second.pop_front();
+  list<OpRequestRef>::iterator it = std::find(q->second.begin(),
+                                              q->second.end(),
+					      prdop->op);
+  assert(it != q->second.end());
+  OpRequestRef op = *it;
+  q->second.erase(it);
   if (q->second.size() == 0) {
     in_progress_proxy_reads.erase(oid);
   }
@@ -2879,18 +2889,18 @@ ReplicatedPG::RepGather *ReplicatedPG::trim_object(const hobject_t &coid)
 
 void ReplicatedPG::snap_trimmer()
 {
+  lock();
+  if (deleting) {
+    unlock();
+    return;
+  }
   if (g_conf->osd_snap_trim_sleep > 0) {
+    unlock();
     utime_t t;
     t.set_from_double(g_conf->osd_snap_trim_sleep);
     t.sleep();
     lock();
     dout(20) << __func__ << " slept for " << t << dendl;
-  } else {
-    lock();
-  }
-  if (deleting) {
-    unlock();
-    return;
   }
   dout(10) << "snap_trimmer entry" << dendl;
   if (is_primary()) {
@@ -8689,7 +8699,6 @@ void ReplicatedPG::on_shutdown()
 
   // remove from queues
   osd->recovery_wq.dequeue(this);
-  osd->scrub_wq.dequeue(this);
   osd->snap_trim_wq.dequeue(this);
   osd->pg_stat_queue_dequeue(this);
   osd->dequeue_pg(this, 0);
@@ -8698,6 +8707,7 @@ void ReplicatedPG::on_shutdown()
   // handles queue races
   deleting = true;
 
+  clear_scrub_reserved();
   unreg_next_scrub();
   cancel_copy_ops(false);
   cancel_flush_ops(false);
